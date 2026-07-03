@@ -59,4 +59,5 @@ docker compose exec web node prisma/seed-roles-sgsi.mjs
 
 ## Documentación
 
-Consulta `docs/` (arquitectura y manual de despliegue) y la **Guía de instalación** del proyecto.
+Consulta la **Guía de instalación** del proyecto, que incluye la puesta en marcha local
+(Docker Compose) y el **despliegue en la nube** (Azure Container Apps).
