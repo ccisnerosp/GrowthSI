@@ -1,0 +1,893 @@
+// Prisma schema generated from DB_SGSI_create.sql with the following approved changes:
+//  · usuario.azure_oid       → nuevo campo (HU05, vinculación Microsoft)
+//  · actividad_riesgo.fecha_cierre   → nullable (solo se setea al cierre)
+//  · aprobacion.fecha_respuesta      → nullable (solo se setea al responder)
+//  · no_conformidades.fecha_cierre   → nullable (solo se setea al cerrar)
+//  · actividad_riesgo PK             → solo id (el SQL tiene (id, updated_at)
+//                                       que rompe updates y FKs)
+//  · control_soa.control_anexo_a_id  → agregado (relación faltante en SQL;
+//    control_soa.organizacion_id        sin estas FKs la tabla no puede operar)
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../node_modules/.prisma/client"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CORE — tenant, organizacion, usuario
+// ════════════════════════════════════════════════════════════════════
+
+model Tenant {
+  id         Int      @id @default(autoincrement())
+  nombre     String   @db.VarChar(150)
+  plan       String   @db.VarChar(50)
+  activo     Boolean  @default(true)
+  // ── Autenticación Entra ID multi-tenant (Fase 0) ──
+  // `tid` del directorio Entra de la PYME; mapeo tid → Tenant (1:1).
+  entra_tenant_id    String?   @unique @db.VarChar(64)
+  auth_method        String    @default("credentials") @db.VarChar(20) // credentials | entra | both
+  consent_status     String?   @db.VarChar(20) // pending | granted | revoked
+  consent_granted_at DateTime? @db.Timestamp(6)
+  default_rol_jit    String?   @default("Auditor") @db.VarChar(40) // rol de usuarios JIT
+  created_at DateTime @default(now()) @db.Timestamp(6)
+
+  organizaciones Organizacion[]
+
+  @@map("tenant")
+}
+
+model Organizacion {
+  id                   Int       @id @default(autoincrement())
+  tenant_id            Int
+  codigo               String    @unique @db.VarChar(30)
+  nombre_organizacion  String    @db.VarChar(180)
+  ruc                  String    @unique @db.VarChar(11)
+  sector               String    @db.VarChar(100)
+  numero_colaboradores Int
+  dominio              String    @db.VarChar(120)
+  mision               String
+  vision               String
+  estado_sgsi          String    @db.VarChar(50)
+  inicio_proyecto      DateTime  @db.Date
+  estado               String    @default("activo") @db.VarChar(40)
+  alcance_sgsi         String?
+  // Marca de tiempo del último cambio del alcance (texto o inclusión de
+  // sedes/procesos/factores). Dispara la revisión aguas abajo (4.3 → 6.1/7.5/8.3).
+  alcance_modificado_at DateTime? @db.Timestamp(6)
+  criterio_riesgo_p    Int?
+  criterio_riesgo_i    Int?
+  // Criterios de aceptación del riesgo (cláusula 6.1.2), en la escala de nivel
+  // (prob × impacto). Relación esperada: apetito ≤ tolerancia.
+  //   apetito_riesgo    : nivel objetivo aceptable; ≤ apetito = dentro del apetito.
+  //   tolerancia_riesgo : nivel máximo soportable; > tolerancia = fuera de tolerancia.
+  apetito_riesgo       Int?
+  tolerancia_riesgo    Int?
+  created_at           DateTime  @default(now()) @db.Timestamp(6)
+  updated_at           DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at           DateTime? @db.Timestamp(6)
+
+  tenant              Tenant              @relation(fields: [tenant_id], references: [id])
+  usuarios            Usuario[]
+  sedes               Sede[]
+  factores            Factor[]
+  partes_interesadas  PartesInteresadas[]
+  procesos            Proceso[]
+  activos_informacion ActivoInformacion[]
+  documentos          Documento[]
+  escenarios_riesgo   EscenarioRiesgo[]
+  auditorias          Auditoria[]
+  objetivos_sgsi      ObjetivoSgsi[]
+  aprobaciones        Aprobacion[]
+  controles_soa       ControlSoa[]
+  roles_sgsi          RolSgsi[]
+  revisiones_alcance  RevisionAlcance[]
+  revisiones_direccion RevisionDireccion[]
+  vectores            Vector[]
+  ia_uso              IaUso[]
+
+  @@map("organizacion")
+}
+
+model Usuario {
+  id               Int       @id @default(autoincrement())
+  organizacion_id  Int
+  nombre           String    @db.VarChar(150)
+  correo           String    @unique @db.VarChar(180)
+  // Nullable desde Fase 0: los usuarios solo-Entra no tienen password.
+  password_hash    String?
+  funcion          String    @db.VarChar(120)
+  rol              String    @db.VarChar(80)
+  area             String    @db.VarChar(100)
+  mfa_activo       Boolean   @default(false)
+  azure_oid        String?   @unique @db.VarChar(128) // `oid` del usuario en Entra (HU05)
+  auth_provider    String    @default("credentials") @db.VarChar(20) // credentials | entra
+  ultimo_acceso_at DateTime? @db.Timestamp(6)
+  estado           String    @default("activo") @db.VarChar(40)
+  created_at       DateTime  @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at       DateTime? @db.Timestamp(6)
+
+  organizacion       Organizacion         @relation(fields: [organizacion_id], references: [id])
+  cambios_documento  DocumentoHistorial[]
+  cambios_riesgo     RiesgoHistorial[]
+  riesgos_aceptados  Riesgo[]             @relation("RiesgoAceptadoPor")
+  roles_sgsi         RolSgsi[]
+  revisiones_alcance RevisionAlcance[]
+  controles_responsable ControlSoa[]
+  actividades_control   ControlActividad[]
+  revisiones_creadas    RevisionDireccion[]       @relation("RevisionCreadaPor")
+  revisiones_aprobadas  RevisionDireccion[]       @relation("RevisionAprobadaPor")
+  acciones_revision     RevisionDireccionAccion[] @relation("AccionResponsable")
+  mediciones_objetivo   MedicionObjetivo[]        @relation("MedicionRegistradaPor")
+
+  @@map("usuario")
+}
+
+// Confirmación de revisión de un módulo (documentos | riesgos | controles) tras
+// un cambio del alcance del SGSI. Cada "Marcar como revisado" inserta una fila →
+// rastro auditable de quién revisó qué y cuándo. El banner de un módulo se
+// considera atendido si existe una revisión con revisado_at ≥ alcance_modificado_at.
+model RevisionAlcance {
+  id              Int      @id @default(autoincrement())
+  organizacion_id Int
+  modulo          String   @db.VarChar(20) // 'documentos' | 'riesgos' | 'controles'
+  revisado_at     DateTime @default(now()) @db.Timestamp(6)
+  revisado_por    Int?
+  created_at      DateTime @default(now()) @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+  usuario      Usuario?     @relation(fields: [revisado_por], references: [id])
+
+  @@index([organizacion_id, modulo])
+  @@map("revision_alcance")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CONTEXTO — sede, factor, partes_interesadas, proceso, activo
+// ════════════════════════════════════════════════════════════════════
+
+model Sede {
+  id                Int       @id @default(autoincrement())
+  organizacion_id   Int
+  codigo            String    @db.VarChar(30)
+  nombre_sede       String    @db.VarChar(150)
+  pais_sede         String    @db.VarChar(80)
+  departamento_sede String    @db.VarChar(80)
+  provincia_sede    String    @db.VarChar(80)
+  distrito_sede     String    @db.VarChar(80)
+  incluido_alcance  Boolean   @default(true)
+  estado            String    @default("activo") @db.VarChar(40)
+  created_at        DateTime  @default(now()) @db.Timestamp(6)
+  updated_at        DateTime? @default(now()) @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+
+  @@unique([organizacion_id, codigo])
+  @@map("sede")
+}
+
+model Factor {
+  id                   Int       @id @default(autoincrement())
+  organizacion_id      Int
+  codigo               String    @db.VarChar(30)
+  origen               String    @db.VarChar(20)
+  categoria            String    @db.VarChar(80)
+  tipo                 String    @db.VarChar(40)
+  descripcion          String
+  impacto              String    @db.VarChar(30)
+  // Si el factor I/E se considera dentro del alcance del SGSI (cláusula 4.3).
+  // Solo los marcados se envían al sugeridor de alcance/riesgos como contexto.
+  incluido_alcance     Boolean   @default(true)
+  estado               String    @default("activo") @db.VarChar(40)
+  fecha_identificacion DateTime  @db.Date
+  created_at           DateTime  @default(now()) @db.Timestamp(6)
+  updated_at           DateTime? @default(now()) @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+
+  @@unique([organizacion_id, codigo])
+  @@map("factor")
+}
+
+model PartesInteresadas {
+  id                     Int       @id @default(autoincrement())
+  organizacion_id        Int
+  codigo                 String    @db.VarChar(30)
+  nombre                 String    @db.VarChar(150)
+  tipo                   String    @db.VarChar(30)
+  expectativas           String
+  requisitos             String
+  relevancia             String    @db.VarChar(30)
+  contacto               String    @db.VarChar(150)
+  frecuencia_interaccion String    @db.VarChar(80)
+  responsable_interno    String    @db.VarChar(150)
+  estado                 String    @default("activo") @db.VarChar(40)
+  created_at             DateTime  @default(now()) @db.Timestamp(6)
+  updated_at             DateTime? @default(now()) @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+
+  @@unique([organizacion_id, codigo])
+  @@map("partes_interesadas")
+}
+
+// Roles, responsabilidades y autoridades del SGSI (cláusula 5.3). Distinto de
+// partes interesadas (4.2): aquí se documentan los roles clave de gobierno de la
+// seguridad (Alta Dirección, CISO, Comité, propietarios de activos/riesgos,
+// auditor interno…), sus responsabilidades/autoridades y su titular asignado.
+model RolSgsi {
+  id                Int       @id @default(autoincrement())
+  organizacion_id   Int
+  codigo            String    @db.VarChar(30)
+  nombre            String    @db.VarChar(150)
+  tipo              String    @db.VarChar(30) // Individual | Órgano colegiado
+  descripcion       String
+  responsabilidades String
+  autoridades       String
+  usuario_id        Int? // titular asignado (opcional)
+  estado            String    @default("activo") @db.VarChar(40)
+  created_at        DateTime  @default(now()) @db.Timestamp(6)
+  updated_at        DateTime? @default(now()) @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+  usuario      Usuario?     @relation(fields: [usuario_id], references: [id])
+  controles    ControlSoa[]
+
+  @@unique([organizacion_id, codigo])
+  @@map("rol_sgsi")
+}
+
+model Proceso {
+  id               Int       @id @default(autoincrement())
+  organizacion_id  Int
+  codigo           String    @db.VarChar(30)
+  nombre           String    @db.VarChar(180)
+  tipo             String    @db.VarChar(50)
+  area             String    @db.VarChar(100)
+  criticidad       String    @db.VarChar(30)
+  kpis             String
+  descripcion      String
+  incluido_alcance Boolean   @default(true)
+  estado           String    @default("activo") @db.VarChar(40)
+  created_at       DateTime  @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at       DateTime? @db.Timestamp(6)
+
+  organizacion Organizacion    @relation(fields: [organizacion_id], references: [id])
+  activos      ProcesoActivo[]
+
+  @@unique([organizacion_id, codigo])
+  @@map("proceso")
+}
+
+model ActivoInformacion {
+  id               Int       @id @default(autoincrement())
+  organizacion_id  Int
+  codigo           String    @db.VarChar(30)
+  nombre           String    @db.VarChar(180)
+  tipo             String    @db.VarChar(60)
+  formato          String    @db.VarChar(40)
+  ubicacion        String    @db.VarChar(200)
+  clasificacion    String    @db.VarChar(60)
+  confidencialidad String    @db.VarChar(30)
+  integridad       String    @db.VarChar(30)
+  disponibilidad   String    @db.VarChar(30)
+  valoracion       String    @db.VarChar(30)
+  estado           String    @default("activo") @db.VarChar(40)
+  modelo           String    @db.VarChar(180)
+  version          String    @db.VarChar(180)
+  proveedor        String    @db.VarChar(180)
+  // Exposición a red: 'interna' | 'externa' (internet) | 'nube'. Gobierna la
+  // relevancia del Patrón B (NVD) y pondera la probabilidad del riesgo técnico.
+  // Nullable: los activos previos a M3 quedan como exposición desconocida.
+  exposicion       String?   @db.VarChar(20)
+  created_at       DateTime  @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at       DateTime? @db.Timestamp(6)
+
+  organizacion Organizacion    @relation(fields: [organizacion_id], references: [id])
+  procesos     ProcesoActivo[]
+
+  @@unique([organizacion_id, codigo])
+  @@map("activo_informacion")
+}
+
+model ProcesoActivo {
+  activo_informacion_id Int
+  proceso_id            Int
+  tipo_relacion         String   @db.VarChar(50)
+  criticidad_relacion   String   @db.VarChar(30)
+  created_at            DateTime @default(now()) @db.Timestamp(6)
+
+  activo  ActivoInformacion @relation(fields: [activo_informacion_id], references: [id])
+  proceso Proceso           @relation(fields: [proceso_id], references: [id])
+
+  @@id([activo_informacion_id, proceso_id])
+  @@map("proceso_activo")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DOCUMENTACIÓN — documento, objetivo_sgsi, aprobacion
+// ════════════════════════════════════════════════════════════════════
+
+model Documento {
+  id              Int       @id @default(autoincrement())
+  organizacion_id Int
+  codigo          String    @db.VarChar(40)
+  nombre          String    @db.VarChar(200)
+  tipo            String    @db.VarChar(60)
+  obligatorio     Boolean
+  descripcion     String
+  // Cuerpo editable del documento (HU21 — editor in-app tipo Word online).
+  // Se guarda el HTML que produce el editor rich-text. NULL hasta que se redacta.
+  contenido       String?
+  version         String    @db.VarChar(20)
+  // archivo_url: clave de almacenamiento PRIVADO del .docx original adjunto
+  // (no es URL pública; se descarga vía ruta autenticada). El contenido editable
+  // (HTML convertido del Word con mammoth) vive en `contenido`.
+  archivo_url     String?
+  archivo_nombre  String?   @db.VarChar(255)
+  // Ítem del catálogo de información documentada obligatoria (ISO 27001) que
+  // este documento satisface (null = documento libre, no obligatorio).
+  obligatorio_id  Int?
+  estado          String    @default("borrador") @db.VarChar(40)
+  created_at      DateTime? @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at      DateTime? @db.Timestamp(6)
+
+  organizacion Organizacion         @relation(fields: [organizacion_id], references: [id])
+  historial    DocumentoHistorial[]
+  // Controles de la SoA que usan este documento como evidencia de implementación.
+  evidencia_de ControlSoa[]         @relation("ControlSoaEvidencia")
+  obligatorio_def DocumentoObligatorio? @relation(fields: [obligatorio_id], references: [id])
+  // Revisiones por la dirección que usan este documento como acta (9.3).
+  revision_acta_de RevisionDireccion[] @relation("RevisionActa")
+
+  @@unique([organizacion_id, codigo])
+  @@map("documento")
+}
+
+// Catálogo GLOBAL de información documentada obligatoria de ISO/IEC 27001:2022.
+// Compartido por todos los tenants; la cobertura se evalúa por tenant (documento
+// vinculado o módulo correspondiente).
+model DocumentoObligatorio {
+  id          Int    @id @default(autoincrement())
+  codigo      String @unique @db.VarChar(20)
+  clausula    String @db.VarChar(20)
+  nombre      String @db.VarChar(200)
+  tipo        String @db.VarChar(20)  // 'Documento' | 'Registro'
+  modulo      String @db.VarChar(20)  // documentos | alcance | soa | objetivos | auditorias | nc | riesgos
+  descripcion String
+  orden       Int    @default(0)
+
+  documentos Documento[]
+
+  @@map("documento_obligatorio")
+}
+
+// HU24 — Trazabilidad de cambios documentales (Auditor).
+// Cada vez que se actualiza un documento (nuevo contenido, cambio de versión,
+// cambio de estado), se inserta un snapshot aquí ANTES de aplicar el cambio.
+// Permite reconstruir quién cambió qué y cuándo.
+model DocumentoHistorial {
+  id             BigInt   @id @default(autoincrement())
+  documento_id   Int
+  version        String   @db.VarChar(20) // versión que se está snapshotteando
+  nombre         String   @db.VarChar(200) // nombre en ese momento
+  estado         String   @db.VarChar(40) // estado en ese momento
+  contenido      String? // snapshot del cuerpo en esa versión
+  cambio_resumen String? // comentario/resumen del cambio (opcional)
+  usuario_id     Int? // quién hizo el cambio (para auditoría)
+  created_at     DateTime @default(now()) @db.Timestamp(6)
+
+  documento Documento @relation(fields: [documento_id], references: [id], onDelete: Cascade)
+  usuario   Usuario?  @relation(fields: [usuario_id], references: [id])
+
+  @@index([documento_id, created_at])
+  @@map("documento_historial")
+}
+
+model ObjetivoSgsi {
+  id              Int       @id @default(autoincrement())
+  organizacion_id Int
+  codigo          String    @db.VarChar(30)
+  nombre          String    @db.VarChar(180)
+  descripcion     String
+  indicador       String    @db.VarChar(180)
+  meta            String    @db.VarChar(120)
+  estado          String    @default("activo") @db.VarChar(40)
+  // P2 — Medición objetiva (cláusula 9.1). Hacen MEDIBLE la meta (antes solo texto).
+  // Si meta_valor es null, el objetivo es cualitativo y se evalúa por estado manual.
+  meta_valor      Float?    // umbral numérico de la meta (p. ej. 90, 7)
+  meta_operador   String    @default(">=") @db.VarChar(4) // >= | <= | = | > | <
+  unidad          String?   @db.VarChar(40) // %, incidentes, días, escala 1-25…
+  frecuencia      String?   @db.VarChar(40) // mensual | trimestral | semestral | anual
+  created_at      DateTime  @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  organizacion Organizacion       @relation(fields: [organizacion_id], references: [id])
+  mediciones   MedicionObjetivo[]
+
+  @@unique([organizacion_id, codigo])
+  @@map("objetivo_sgsi")
+}
+
+// P2 — Medición de un objetivo del SGSI en el tiempo (cláusula 9.1: seguimiento,
+// medición, análisis y evaluación). DETERMINISTA: el cumplimiento se deriva
+// comparando `valor` con (meta_operador, meta_valor) del objetivo. Sin IA.
+model MedicionObjetivo {
+  id                        Int      @id @default(autoincrement())
+  objetivo_id               Int
+  fecha_medicion            DateTime @db.Date
+  valor                     Float
+  nota                      String   @default("")
+  registrado_por_usuario_id Int?
+  created_at                DateTime @default(now()) @db.Timestamp(6)
+
+  objetivo       ObjetivoSgsi @relation(fields: [objetivo_id], references: [id], onDelete: Cascade)
+  registrado_por Usuario?     @relation("MedicionRegistradaPor", fields: [registrado_por_usuario_id], references: [id])
+
+  @@index([objetivo_id])
+  @@map("medicion_objetivo")
+}
+
+model Aprobacion {
+  id                Int       @id @default(autoincrement())
+  organizacion_id   Int
+  codigo            String    @db.VarChar(30)
+  tipo_entidad      String    @db.VarChar(40) // 'alcance' | 'objetivo' | 'documento'
+  entidad_id        BigInt
+  comentario        String
+  fecha_solicitud   DateTime  @default(now()) @db.Timestamp(6)
+  fecha_respuesta   DateTime? @db.Timestamp(6) // nullable: only set when responded
+  fecha_vencimiento DateTime  @db.Date
+  estado            String    @default("pendiente") @db.VarChar(40)
+  created_at        DateTime  @default(now()) @db.Timestamp(6)
+  updated_at        DateTime? @default(now()) @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+
+  @@unique([organizacion_id, codigo])
+  @@map("aprobacion")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// RIESGOS — escenario, riesgo, actividad_riesgo, controles, SoA
+// ════════════════════════════════════════════════════════════════════
+
+model EscenarioRiesgo {
+  id              Int       @id @default(autoincrement())
+  organizacion_id Int
+  codigo          String    @unique @db.VarChar(30)
+  nombre          String    @db.VarChar(200)
+  descripcion     String
+  amenaza         String    @db.VarChar(180)
+  vulnerabilidad  String    @db.VarChar(180)
+  // Dominio ISO 27001:2022: 'tecnologico' | 'organizacional' | 'personas' | 'fisico'
+  // (null en escenarios manuales antiguos). El sugeridor IA siempre lo setea.
+  dominio         String?   @db.VarChar(40)
+  // 'manual' | 'ia' — distingue escenarios creados por el usuario vs sugeridos.
+  origen          String    @default("manual") @db.VarChar(20)
+  // Justificación + citas de fuentes (MITRE/ISO 27005/ENISA/NVD) del sugeridor.
+  justificacion_ia String?
+  // estado: 'generado' (sugerido por IA, pendiente de revisión) | 'activo' | 'inactivo'
+  estado          String    @default("identificado") @db.VarChar(40)
+  created_at      DateTime  @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at      DateTime? @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+  riesgos      Riesgo[]
+
+  @@map("escenario_riesgo")
+}
+
+model Riesgo {
+  id                   Int       @id @default(autoincrement())
+  escenario_riesgo_id  Int
+  codigo               String    @unique @db.VarChar(30)
+  nombre               String    @db.VarChar(200)
+  descripcion          String
+  probabilidad_inicial Int
+  impacto_inicial      Int
+  nivel_inicial        Int
+  tratamiento          String    @db.VarChar(80)
+  probabilidad_actual  Int
+  impacto_actual       Int
+  nivel_actual         Int
+  // 'manual' | 'ia' — riesgo creado por el usuario vs derivado de una sugerencia IA.
+  origen               String    @default("manual") @db.VarChar(20)
+  // estado: 'generado' (IA, pendiente) | 'tratamiento' | 'controlado' | 'aceptado'
+  estado               String    @default("identificado") @db.VarChar(40)
+  // Quién aceptó/confirmó el riesgo (al aprobar una sugerencia IA o al crearlo
+  // manual). Nullable: los riesgos 'generado' aún no aceptados no tienen autor.
+  aceptado_por_usuario_id Int?
+  aceptado_por_at         DateTime? @db.Timestamp(6)
+  created_at           DateTime  @default(now()) @db.Timestamp(6)
+  updated_at           DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at           DateTime? @db.Timestamp(6)
+
+  escenario    EscenarioRiesgo   @relation(fields: [escenario_riesgo_id], references: [id])
+  aceptado_por Usuario?          @relation("RiesgoAceptadoPor", fields: [aceptado_por_usuario_id], references: [id])
+  actividades  ActividadRiesgo[]
+  controles    RiesgoControl[]
+  historial    RiesgoHistorial[]
+
+  @@map("riesgo")
+}
+
+// Trazabilidad de la reevaluación del riesgo (P·I actual → nivel actual).
+// Cada cambio del par probabilidad/impacto actual exige una justificación
+// obligatoria y queda registrado con su autor (similar a documento_historial).
+model RiesgoHistorial {
+  id                    BigInt   @id @default(autoincrement())
+  riesgo_id             Int
+  probabilidad_anterior Int
+  impacto_anterior      Int
+  nivel_anterior        Int
+  probabilidad_nueva    Int
+  impacto_nueva         Int
+  nivel_nuevo           Int
+  justificacion         String
+  usuario_id            Int?
+  created_at            DateTime @default(now()) @db.Timestamp(6)
+
+  riesgo  Riesgo   @relation(fields: [riesgo_id], references: [id], onDelete: Cascade)
+  usuario Usuario? @relation(fields: [usuario_id], references: [id])
+
+  @@index([riesgo_id, created_at])
+  @@map("riesgo_historial")
+}
+
+model ActividadRiesgo {
+  // SQL tiene PK compuesta (id, updated_at) — usamos solo id; mantenemos updated_at simple.
+  id                      Int       @id @default(autoincrement())
+  riesgo_id               Int
+  codigo                  String    @unique @db.VarChar(30)
+  descripcion             String
+  tipo_actividad          String    @db.VarChar(50)
+  fecha_inicio            DateTime  @db.Date
+  fecha_vencimiento       DateTime  @db.Date
+  fecha_cierre            DateTime? @db.Date // nullable: solo al cerrar
+  probabilidad_resultante Int
+  impacto_resultante      Int
+  nivel_resultante        Int
+  resultado               String
+  evidencia_url           String
+  estado                  String    @default("pendiente") @db.VarChar(40)
+  created_at              DateTime  @default(now()) @db.Timestamp(6)
+  updated_at              DateTime  @default(now()) @db.Timestamp(6)
+
+  riesgo Riesgo @relation(fields: [riesgo_id], references: [id])
+
+  @@map("actividad_riesgo")
+}
+
+model ControlAnexoA {
+  id          Int    @id @default(autoincrement())
+  codigo      String @unique @db.VarChar(20)
+  nombre      String @db.VarChar(250)
+  dominio     String @db.VarChar(50)
+  descripcion String
+
+  controles_soa ControlSoa[]
+
+  @@map("controles_anexo_a")
+}
+
+model ControlSoa {
+  id                 Int       @id @default(autoincrement())
+  // FKs agregadas (no estaban en SQL — sin ellas la tabla no funciona):
+  control_anexo_a_id Int
+  organizacion_id    Int
+  // 'Aplica' parte en false: un control solo aplica cuando el contexto de la
+  // organización lo justifica (sugerencia IA basada en riesgos/contexto o decisión
+  // manual). La SoA exige sustentar tanto la inclusión como la exclusión.
+  aplica             Boolean   @default(false)
+  // estado: 'generado' (sugerido por IA, pendiente de revisión) | 'no_iniciado'
+  //         | 'planificado' | 'parcial' | 'implementado' | 'no_aplica'
+  estado             String    @default("no_iniciado") @db.VarChar(40)
+  justificacion      String
+  // Nota/URL de evidencia (texto libre, opcional). La evidencia formal es un documento.
+  evidencia          String
+  // Evidencia formal: documento del módulo Documentos (M2) que sustenta el control.
+  evidencia_documento_id Int?
+  observaciones      String
+  fecha_revision     DateTime  @db.Date
+  // 'manual' | 'ia' — distingue controles del SoA registrados por el usuario vs sugeridos.
+  origen             String    @default("manual") @db.VarChar(20)
+  // Justificación + citas ISO 27002 del sugeridor (se conserva al aceptar).
+  justificacion_ia   String?
+  // Responsable de la implementación (cláusula 5.3): rol del SGSI + titular.
+  rol_sgsi_id            Int?
+  responsable_usuario_id Int?
+  created_at         DateTime  @default(now()) @db.Timestamp(6)
+  updated_at         DateTime? @default(now()) @db.Timestamp(6)
+
+  control_anexo_a    ControlAnexoA   @relation(fields: [control_anexo_a_id], references: [id])
+  organizacion       Organizacion    @relation(fields: [organizacion_id], references: [id])
+  evidencia_documento Documento?     @relation("ControlSoaEvidencia", fields: [evidencia_documento_id], references: [id])
+  rol_sgsi           RolSgsi?        @relation(fields: [rol_sgsi_id], references: [id])
+  responsable        Usuario?        @relation(fields: [responsable_usuario_id], references: [id])
+  riesgos            RiesgoControl[]
+  actividades        ControlActividad[]
+
+  @@unique([control_anexo_a_id, organizacion_id])
+  @@map("control_soa")
+}
+
+// Actividades de implementación de un control (plan de tareas). El control pasa
+// de planificado → parcial → implementado a medida que se cierran; el estado del
+// control NO se cambia solo (decisión manual del CISO) para evitar acoplamientos.
+model ControlActividad {
+  id                     Int       @id @default(autoincrement())
+  control_soa_id         Int
+  descripcion            String
+  responsable_usuario_id Int?
+  fecha_objetivo         DateTime? @db.Date
+  estado                 String    @default("pendiente") @db.VarChar(20) // pendiente | en_progreso | hecho
+  orden                  Int       @default(0)
+  created_at             DateTime  @default(now()) @db.Timestamp(6)
+  updated_at             DateTime? @default(now()) @db.Timestamp(6)
+
+  control_soa ControlSoa @relation(fields: [control_soa_id], references: [id], onDelete: Cascade)
+  responsable Usuario?   @relation(fields: [responsable_usuario_id], references: [id])
+
+  @@index([control_soa_id])
+  @@map("control_actividad")
+}
+
+model RiesgoControl {
+  control_soa_id       Int
+  riesgo_id            Int
+  tipo_relacion        String   @db.VarChar(50)
+  efectividad_estimada String   @db.VarChar(30)
+  observaciones        String
+  created_at           DateTime @default(now()) @db.Timestamp(6)
+
+  control_soa ControlSoa @relation(fields: [control_soa_id], references: [id])
+  riesgo      Riesgo     @relation(fields: [riesgo_id], references: [id])
+
+  @@id([control_soa_id, riesgo_id])
+  @@map("riesgo_control")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// AUDITORÍA — auditoria, hallazgo, no_conformidad
+// ════════════════════════════════════════════════════════════════════
+
+model Auditoria {
+  id                Int       @id @default(autoincrement())
+  organizacion_id   Int
+  codigo            String    @unique @db.VarChar(40)
+  nombre            String    @db.VarChar(200)
+  tipo              String    @db.VarChar(50)
+  alcance           String
+  fecha_inicio      DateTime  @db.Date
+  fecha_fin         DateTime  @db.Date
+  fecha_vencimiento DateTime  @db.Date
+  estado            String    @default("planificada") @db.VarChar(40)
+  created_at        DateTime  @default(now()) @db.Timestamp(6)
+  updated_at        DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at        DateTime? @db.Timestamp(6)
+
+  organizacion     Organizacion        @relation(fields: [organizacion_id], references: [id])
+  hallazgos        AuditoriaHallazgo[]
+  no_conformidades NoConformidad[]
+
+  @@map("auditoria")
+}
+
+model AuditoriaHallazgo {
+  id           Int       @id @default(autoincrement())
+  auditoria_id Int
+  codigo       String    @unique @db.VarChar(30)
+  titulo       String    @db.VarChar(220)
+  descripcion  String
+  severidad    String    @db.VarChar(40)
+  estado       String    @default("abierto") @db.VarChar(40)
+  created_at   DateTime  @default(now()) @db.Timestamp(6)
+  updated_at   DateTime? @default(now()) @db.Timestamp(6)
+
+  auditoria Auditoria @relation(fields: [auditoria_id], references: [id])
+
+  @@map("auditoria_hallazgo")
+}
+
+model NoConformidad {
+  id                   Int       @id @default(autoincrement())
+  auditoria_id         Int
+  codigo               String    @unique @db.VarChar(30)
+  titulo               String    @db.VarChar(220)
+  descripcion          String
+  causa_raiz           String
+  accion_correctiva    String
+  severidad            String    @db.VarChar(40)
+  fecha_identificacion DateTime  @db.Date
+  fecha_vencimiento    DateTime  @db.Date
+  fecha_cierre         DateTime? @db.Date // nullable: solo al cerrar
+  estado               String    @default("identificada") @db.VarChar(40)
+  created_at           DateTime  @default(now()) @db.Timestamp(6)
+  updated_at           DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at           DateTime? @db.Timestamp(6)
+
+  auditoria Auditoria @relation(fields: [auditoria_id], references: [id])
+
+  @@map("no_conformidades")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// REVISIÓN POR LA DIRECCIÓN (cláusula 9.3) — acoplada al módulo Auditorías.
+// Los INSUMOS (9.3.2) se ensamblan automáticamente desde los demás módulos
+// y se CONGELAN en `insumos_snapshot` (Json) al momento de la revisión, para
+// trazabilidad/reproducibilidad. Las SALIDAS (9.3.3) son las decisiones
+// (conclusiones) + acciones de mejora rastreables, que la próxima revisión
+// trae de vuelta como insumo (estado de acciones previas, 9.3.2 a).
+// ════════════════════════════════════════════════════════════════════
+
+model RevisionDireccion {
+  id                     Int       @id @default(autoincrement())
+  organizacion_id        Int
+  codigo                 String    @unique @db.VarChar(30) // RD-NNN
+  fecha_revision         DateTime  @db.Date
+  periodo_desde          DateTime  @db.Date
+  periodo_hasta          DateTime  @db.Date
+  asistentes             String    @default("")
+  // Salidas 9.3.3 redactadas por la Dirección (no IA).
+  conclusiones           String    @default("")
+  // Snapshot Json de los insumos 9.3.2 calculados al crear/recalcular.
+  insumos_snapshot       Json?
+  // borrador | en_revision | aprobada
+  estado                 String    @default("borrador") @db.VarChar(40)
+  // Acta generada (Documento tipo 'Revisión por la Dirección', enlaza OBL-9.3).
+  documento_id           Int?
+  creado_por_usuario_id  Int?
+  aprobado_por_usuario_id Int?
+  aprobado_at            DateTime? @db.Timestamp(6)
+  created_at             DateTime  @default(now()) @db.Timestamp(6)
+  updated_at             DateTime? @default(now()) @db.Timestamp(6)
+  deleted_at             DateTime? @db.Timestamp(6)
+
+  organizacion Organizacion              @relation(fields: [organizacion_id], references: [id])
+  creado_por   Usuario?                  @relation("RevisionCreadaPor", fields: [creado_por_usuario_id], references: [id])
+  aprobado_por Usuario?                  @relation("RevisionAprobadaPor", fields: [aprobado_por_usuario_id], references: [id])
+  documento    Documento?                @relation("RevisionActa", fields: [documento_id], references: [id])
+  acciones     RevisionDireccionAccion[]
+
+  @@map("revision_direccion")
+}
+
+model RevisionDireccionAccion {
+  id                    Int       @id @default(autoincrement())
+  revision_direccion_id Int
+  descripcion           String
+  // mejora | cambio_control | cambio_objetivo | recurso | politica | otro
+  tipo                  String    @default("mejora") @db.VarChar(40)
+  responsable_usuario_id Int?
+  prioridad             String    @default("media") @db.VarChar(20) // alta | media | baja
+  fecha_objetivo        DateTime? @db.Date
+  // pendiente | en_progreso | hecho | cancelada
+  estado                String    @default("pendiente") @db.VarChar(40)
+  fecha_cierre          DateTime? @db.Date
+  created_at            DateTime  @default(now()) @db.Timestamp(6)
+  updated_at            DateTime? @default(now()) @db.Timestamp(6)
+
+  revision    RevisionDireccion @relation(fields: [revision_direccion_id], references: [id], onDelete: Cascade)
+  responsable Usuario?          @relation("AccionResponsable", fields: [responsable_usuario_id], references: [id])
+
+  @@index([revision_direccion_id])
+  @@map("revision_direccion_accion")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// IA / VECTORIZACIÓN
+//   · Tabla renombrada de `vector` → `vector_chunk` para no colisionar
+//     con el TYPE `vector` de la extensión pgvector (que ocupa ese
+//     identificador). El modelo Prisma sigue llamándose `Vector`
+//     internamente.
+//   · `embedding` ahora es el TYPE pgvector real `vector(1536)`. Prisma
+//     no soporta nativamente este tipo, así que lo declaramos como
+//     `Unsupported`. Lectura/escritura via $queryRaw / $executeRaw.
+// ════════════════════════════════════════════════════════════════════
+
+model Vector {
+  id                 Int                          @id @default(autoincrement())
+  organizacion_id    Int
+  tabla_origen       String                       @db.VarChar(80)
+  registro_origen_id BigInt
+  campo_origen       String                       @db.VarChar(80)
+  chunk_indice       Int
+  chunk_texto        String
+  chunk_hash         String                       @db.VarChar(128)
+  tokens             Int
+  embedding          Unsupported("vector(1536)")
+  modelo_embedding   String                       @db.VarChar(100)
+  metadata           Json                         @db.JsonB
+  created_at         DateTime                     @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?                    @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+
+  @@index([organizacion_id, tabla_origen])
+  @@map("vector_chunk")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// IA — Vector store global (knowledge base compartida entre tenants)
+//   · ISO 27001:2022 oficial (catálogo Anexo A, cláusulas)
+//   · Reportes sectoriales (logística, banca, salud, …)
+//   · Cualquier otro corpus público útil para RAG transversal
+//   · No tiene organizacion_id (es compartido)
+//   · metadata: { source, section, page, dominio, ... }
+// ════════════════════════════════════════════════════════════════════
+model VectorGlobal {
+  id               BigInt                       @id @default(autoincrement())
+  fuente           String                       @db.VarChar(120) // 'iso27001_2022' | 'sector_logistica' | ...
+  documento        String                       @db.VarChar(200) // nombre del archivo origen
+  seccion          String?                      @db.VarChar(120) // 'A.5.15' | 'Cláusula 4.1' | etc.
+  chunk_indice     Int
+  chunk_texto      String
+  chunk_hash       String                       @db.VarChar(128)
+  tokens           Int
+  embedding        Unsupported("vector(1536)")
+  modelo_embedding String                       @db.VarChar(100)
+  metadata         Json                         @db.JsonB
+  created_at       DateTime                     @default(now()) @db.Timestamp(6)
+
+  @@unique([fuente, chunk_hash])
+  @@index([fuente])
+  @@map("vector_global")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// IA — Cola de jobs de ingesta (contrato Web ↔ Worker)
+//   · En local dev: tabla actúa como cola simple (un script CLI lee).
+//   · En Azure: Storage Queue mete mensajes y el worker procesa,
+//     este registro queda como bitácora de qué se ingestó.
+// ════════════════════════════════════════════════════════════════════
+model IngestionJob {
+  id               BigInt    @id @default(autoincrement())
+  tipo             String    @db.VarChar(40) // 'pdf_global' | 'pdf_tenant'
+  organizacion_id  Int? // null si es ingesta global (knowledge base)
+  fuente           String    @db.VarChar(120)
+  blob_url         String?   @db.VarChar(500) // azure blob; null en dev = ruta local
+  ruta_local       String?   @db.VarChar(500)
+  estado           String    @default("pendiente") @db.VarChar(40)
+  // 'pendiente' | 'en_curso' | 'completo' | 'error'
+  resultado        Json?     @db.JsonB // { chunks: N, tokens: N, ms: N } o { error: "..." }
+  intentos         Int       @default(0)
+  created_at       DateTime  @default(now()) @db.Timestamp(6)
+  iniciado_at      DateTime? @db.Timestamp(6)
+  completado_at    DateTime? @db.Timestamp(6)
+
+  @@index([estado, created_at])
+  @@map("ingestion_job")
+}
+
+// ════════════════════════════════════════════════════════════════════
+// IA — Tracking de uso de tokens por tenant (límite 1M/mes)
+// ════════════════════════════════════════════════════════════════════
+model IaUso {
+  id              BigInt   @id @default(autoincrement())
+  organizacion_id Int
+  usuario_id      Int? // quién disparó la llamada (null si fue background)
+  operacion       String   @db.VarChar(60) // 'embedding' | 'alcance_preliminar' | 'sugerir_riesgos' | ...
+  modelo          String   @db.VarChar(80)
+  tokens_input    Int      @default(0)
+  tokens_output   Int      @default(0)
+  costo_usd       Decimal  @default(0) @db.Decimal(10, 6)
+  created_at      DateTime @default(now()) @db.Timestamp(6)
+
+  organizacion Organizacion @relation(fields: [organizacion_id], references: [id])
+
+  @@index([organizacion_id, created_at])
+  @@map("ia_uso")
+}

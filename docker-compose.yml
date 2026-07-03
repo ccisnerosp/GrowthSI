@@ -1,0 +1,87 @@
+# GrowthSI — orquestación local de los DOS servicios independientes + infra.
+#
+# NOTA: las rutas de build (./apps/web, ./apps/ai-service) corresponden a la
+# estructura objetivo del monorepo. El AI service ya está en ./apps/ai-service.
+# El servicio web se construye una vez que muevas el Next.js a ./apps/web
+# (paso confirmado pendiente). Mientras tanto puedes levantar postgres + redis
+# + ai-service con:  docker compose up postgres redis ai-service
+#
+# Puertos:
+#   web        → 3000
+#   ai-service → 8000  (en prod: ingress INTERNAL, no expuesto al navegador)
+#   postgres   → 5432
+#   redis      → 6379
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: growthsi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d growthsi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ai-service:
+    build:
+      context: ./apps/ai-service
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/growthsi"
+      AI_SERVICE_API_KEY: "${AI_SERVICE_API_KEY:-dev-shared-secret-change-me}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_CHAT_MODEL: "gpt-4o-mini"
+      OPENAI_EMBEDDING_MODEL: "text-embedding-3-small"
+      # Azure (opcional — si se setean, el AI service usa Azure en vez de OpenAI):
+      AZURE_OPENAI_ENDPOINT: "${AZURE_OPENAI_ENDPOINT:-}"
+      AZURE_OPENAI_API_KEY: "${AZURE_OPENAI_API_KEY:-}"
+      AZURE_OPENAI_CHAT_DEPLOYMENT: "${AZURE_OPENAI_CHAT_DEPLOYMENT:-}"
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: "${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-}"
+    ports:
+      # En dev exponemos 8000 para poder depurar. En producción este servicio
+      # va con ingress INTERNAL: solo 'web' lo alcanza por la red interna.
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/growthsi?schema=public"
+      DIRECT_URL: "postgresql://postgres:postgres@postgres:5432/growthsi?schema=public"
+      AUTH_SECRET: "${AUTH_SECRET:-changeme}"
+      AUTH_URL: "http://localhost:3000"
+      AUTH_TRUST_HOST: "true"
+      # Apunta al AI service por la red interna de compose (NO localhost):
+      AI_SERVICE_URL: "http://ai-service:8000"
+      AI_SERVICE_API_KEY: "${AI_SERVICE_API_KEY:-dev-shared-secret-change-me}"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
+
+volumes:
+  pgdata:

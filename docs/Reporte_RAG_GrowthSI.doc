@@ -1,0 +1,167 @@
+﻿<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<title>Reporte del pipeline RAG — GrowthSI</title>
+<style>
+  @page { size: A4; margin: 2.2cm 2.4cm; }
+  * { box-sizing: border-box; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #1a1a1a; line-height: 1.6; font-size: 11.5pt; }
+  h1 { font-size: 22pt; font-weight: 700; margin: 0 0 6px; line-height: 1.2; }
+  h2 { font-size: 15pt; margin: 24px 0 8px; border-bottom: 1.5px solid #2a251f; padding-bottom: 4px; }
+  h3 { font-size: 12.5pt; margin: 16px 0 6px; color: #2a251f; }
+  p { margin: 8px 0; text-align: justify; }
+  ul, ol { margin: 8px 0 8px 22px; }
+  li { margin: 4px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 10pt; }
+  td, th { border: 1px solid #bbb; padding: 6px 9px; vertical-align: top; }
+  th { background: #f0ece6; font-family: Arial, sans-serif; font-size: 9pt; text-transform: uppercase; letter-spacing: .04em; text-align: left; }
+  .org { font-family: Arial, sans-serif; font-size: 9pt; letter-spacing: .12em; text-transform: uppercase; color: #888; margin-bottom: 10px; }
+  .meta { font-family: Arial, sans-serif; font-size: 9pt; color: #555; margin: 10px 0 0; }
+  .meta strong { color: #1a1a1a; }
+  .callout { border-left: 4px solid #6a4fb6; background: #f5f2fb; padding: 12px 16px; margin: 14px 0; }
+  .small { font-family: Arial, sans-serif; font-size: 8.5pt; color: #666; }
+  .ok { color: #1b7a44; font-weight: 700; }
+  .warn { color: #9a6b00; font-weight: 700; }
+  code { font-family: 'Consolas', monospace; font-size: 9.5pt; background: #f0ece6; padding: 1px 4px; }
+  .cover { border-bottom: 2px solid #2a251f; padding-bottom: 18px; margin-bottom: 24px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="org">GrowthSI — Plataforma SaaS de SGSI · ISO/IEC 27001:2022</div>
+  <h1>Pipeline RAG: arquitectura end-to-end, modelo y eventos clave</h1>
+  <div class="meta">
+    <strong>Documento:</strong> Reporte técnico-ejecutivo &nbsp;·&nbsp;
+    <strong>Versión:</strong> 1.0 &nbsp;·&nbsp;
+    <strong>Fecha:</strong> 3 de junio de 2026 &nbsp;·&nbsp;
+    <strong>Alcance:</strong> Servicio de IA (RAG + LLM) de GrowthSI
+  </div>
+  <div class="meta small">Nota: documento curado. No incluye secretos, credenciales, datos de organizaciones reales ni el texto íntegro de las normas (referenciadas, no reproducidas). Los ejemplos usan una organización sintética.</div>
+</div>
+
+<h2>1. Resumen ejecutivo</h2>
+<p>GrowthSI incorpora un pipeline <strong>RAG (Retrieval-Augmented Generation)</strong> que asiste a PYMES en la construcción de su Sistema de Gestión de Seguridad de la Información conforme a ISO/IEC 27001:2022. El pipeline recupera evidencia normativa y de amenazas de una base de conocimiento vectorial y la combina con el contexto propio de cada organización para generar alcance, documentos, escenarios de riesgo y controles, siempre como propuestas revisables por el usuario.</p>
+<p>El <strong>modelo elegido</strong> es <strong>OpenAI gpt-4o-mini</strong> (generación) y <strong>text-embedding-3-small</strong> (recuperación), sobre <strong>PostgreSQL + pgvector</strong>, con conmutación a <strong>Azure OpenAI</strong> en producción. La evaluación del pipeline arroja recuperación sólida (Recall@k 1.0, MRR 0.967) y alta fidelidad de generación (faithfulness 1.0 en conocimiento ISO; 0.875 en el sugeridor de riesgos), con salvaguardas anti-alucinación deterministas ya implementadas.</p>
+
+<div class="callout">
+<strong>Estado:</strong> el RAG de conocimiento (alcance, documentos, justificación de controles) está validado y no alucina sobre lo evaluado. Los focos de mejora son la robustez del dominio <em>personas</em> y la medición de precisión real del sugeridor.
+</div>
+
+<h2>2. Modelo elegido y justificación</h2>
+<table>
+  <tr><th>Componente</th><th>Elección</th><th>Por qué</th></tr>
+  <tr><td>Modelo de generación (LLM)</td><td>gpt-4o-mini · temperatura 0.4 · JSON-mode en sugeridores</td><td>Relación coste/latencia/calidad adecuada para PYME; salida estructurada fiable (JSON-mode)</td></tr>
+  <tr><td>Modelo de embeddings</td><td>text-embedding-3-small</td><td>Coste bajo y rendimiento suficiente para recuperación semántica sobre normativa</td></tr>
+  <tr><td>Almacén vectorial</td><td>PostgreSQL 18 + pgvector (distancia coseno)</td><td>Mismo motor que el dato transaccional; multitenancy nativa; sin servicio extra</td></tr>
+  <tr><td>Proveedor</td><td>OpenAI (desarrollo) / Azure OpenAI (producción)</td><td>Conmutación por configuración (<code>use_azure</code>); cumplimiento y residencia de datos en la nube de despliegue</td></tr>
+  <tr><td>Orquestación</td><td>FastAPI + LangChain (servicio de IA dedicado)</td><td>Aísla la IA del front; el navegador nunca llama al modelo directamente</td></tr>
+</table>
+
+<h2>3. Arquitectura RAG end-to-end</h2>
+<p>El flujo, de extremo a extremo, atraviesa cinco etapas más una capa de salvaguardas:</p>
+<ol>
+  <li><strong>Ingesta:</strong> PDF/catálogo &rarr; troceado (chunking) &rarr; <em>filtro de ruido</em> (descarta carátulas, índices y listas de referencias/URLs) &rarr; embeddings.</li>
+  <li><strong>Indexación:</strong> los vectores se persisten en <code>vector_global</code> (base de conocimiento compartida) y <code>vector_chunk</code> (datos por organización, aislados por <code>organizacion_id</code>).</li>
+  <li><strong>Recuperación:</strong> búsqueda por similitud coseno filtrada por fuente, top-k por consulta.</li>
+  <li><strong>Generación:</strong> el LLM recibe el contexto recuperado + el contexto de la organización + un prompt con reglas de fundamentación.</li>
+  <li><strong>Salvaguardas:</strong> deduplicación semántica, guarda anti-alucinación de CVE y reglas de no-invención.</li>
+  <li><strong>Salida:</strong> propuesta estructurada con citas (sección, documento, score) y registro de consumo (tokens/coste).</li>
+</ol>
+<p class="small">Principio de seguridad: el navegador nunca contacta al servicio de IA; solo Next.js lo hace en el servidor con clave compartida. El servicio de IA accede a la BD con su propio pool (asyncpg), no con el ORM de la app.</p>
+
+<h2>4. Base de conocimiento</h2>
+<p>Fuentes globales indexadas (tras la limpieza de corpus). Las normas se procesan para recuperación; no se reproduce su texto íntegro.</p>
+<table>
+  <tr><th>Fuente</th><th>Chunks</th><th>Uso</th></tr>
+  <tr><td>MITRE ATT&amp;CK Enterprise</td><td>697</td><td>Amenazas — dominio tecnológico</td></tr>
+  <tr><td>ISO/IEC 27002 (controles)</td><td>321</td><td>Sugeridor y documento de controles</td></tr>
+  <tr><td>ISO/IEC 27005 (amenazas)</td><td>141</td><td>Amenazas — dominio organizacional</td></tr>
+  <tr><td>MITRE ATT&amp;CK Social Eng.</td><td>136</td><td>Amenazas — dominio personas</td></tr>
+  <tr><td>ENISA Threat Landscape</td><td>93</td><td>Amenazas — dominio organizacional</td></tr>
+  <tr><td>ISO/IEC 27001:2022</td><td>42</td><td>Alcance y plantillas de documentos</td></tr>
+  <tr><td>ENISA amenazas físicas</td><td>10</td><td>Amenazas — dominio físico</td></tr>
+</table>
+
+<h2>5. Funciones IA que consumen el RAG</h2>
+<table>
+  <tr><th>Función</th><th>Fuente RAG · top-k</th><th>Notas</th></tr>
+  <tr><td>Alcance preliminar (4.3)</td><td>ISO 27001 · k=5</td><td>Narrativa de alcance</td></tr>
+  <tr><td>Plantilla de documento</td><td>ISO 27001 · k=5</td><td>+ objetivos del SGSI en contexto</td></tr>
+  <tr><td>Sugeridor de escenarios de riesgo</td><td>Amenazas por dominio · k=5 + NVD online</td><td>Dedup + guarda CVE</td></tr>
+  <tr><td>Sugeridor de controles (SoA)</td><td>ISO 27002 · k=10</td><td>Incremental; + objetivos</td></tr>
+  <tr><td>Documento de evidencia de control</td><td>ISO 27002 · k=6</td><td>Estructura ISO 27002</td></tr>
+</table>
+<h3>Patrón A + Patrón B</h3>
+<p><strong>Patrón A (RAG offline):</strong> recuperación sobre <code>vector_global</code>, sin llamadas externas. <strong>Patrón B (NVD en tiempo real):</strong> solo cuando un activo tiene tecnología identificada (modelo + versión), se consulta en vivo la NVD (CVSS &ge; 7, ~90 días) para aportar CVEs verificados; degrada con elegancia si falla.</p>
+
+<h2>6. Calidad y salvaguardas anti-alucinación</h2>
+<ul>
+  <li><strong>Deduplicación semántica:</strong> los escenarios generados se comparan por embeddings contra los existentes y entre sí; se descartan variantes re-redactadas (umbral coseno 0.85).</li>
+  <li><strong>Guarda de CVE (determinista):</strong> toda cita <code>CVE-XXXX</code> que no provenga de la consulta NVD de esa ejecución se elimina; si no se consultó NVD, se quitan todas.</li>
+  <li><strong>Reglas de fundamentación:</strong> el prompt prohíbe inventar software, hardware, versiones, fabricantes, roles, procesos o sedes que no estén en el contexto.</li>
+  <li><strong>Objetivos del SGSI en contexto:</strong> alimentan la plantilla de documentos y el sugeridor de controles para alinear las propuestas a la cláusula 6.2.</li>
+  <li><strong>Higiene de corpus:</strong> filtro de ruido en la ingesta + depuración del índice (referencias/URLs, carátulas).</li>
+</ul>
+
+<h2>7. Evaluación del pipeline</h2>
+<p>Se construyó un harness de evaluación con tres partes: calidad RAG (recuperación + juez LLM de fidelidad), anti-alucinación del sugeridor de riesgos sobre una organización sintética, y operación/negocio (datos reales del sistema).</p>
+<table>
+  <tr><th>Indicador</th><th>Valor</th><th>Lectura</th></tr>
+  <tr><td>Context Recall@k</td><td class="ok">1.0</td><td>Siempre recupera la cláusula correcta en top-5</td></tr>
+  <tr><td>MRR</td><td class="ok">0.967</td><td>Casi siempre en primer lugar</td></tr>
+  <tr><td>Context Precision@k</td><td>0.72</td><td>~1/3 del top-5 es ruido tolerable</td></tr>
+  <tr><td>Faithfulness (conocimiento ISO)</td><td class="ok">1.0</td><td>Sin afirmaciones fuera del contexto</td></tr>
+  <tr><td>Faithfulness (sugeridor de riesgos)</td><td>0.875</td><td>1 de 4 marcado (caso límite); 0 CVE inventados</td></tr>
+  <tr><td>Aceptación de escenarios IA</td><td>60% (6/10)</td><td>Proxy de calidad percibida</td></tr>
+  <tr><td>Aceptación de controles IA</td><td class="warn">22.6% (7/31)</td><td>Mide revisado/pendiente (los descartes se borran)</td></tr>
+</table>
+<p class="small">Limitación de medición: la "aceptación" actual no distingue rechazo de pendiente, porque los descartes se eliminan; para medir precisión real del sugeridor habría que conservar el descarte.</p>
+
+<h2>8. Eventos / hitos importantes</h2>
+<table>
+  <tr><th>#</th><th>Hito</th><th>Aporte al RAG</th></tr>
+  <tr><td>1</td><td>Objetivos del SGSI en el contexto</td><td>Alinea plantillas y controles a la cláusula 6.2</td></tr>
+  <tr><td>2</td><td>Sugeridor de controles incremental + reevaluación</td><td>Cierra brechas de cobertura y reusa controles existentes</td></tr>
+  <tr><td>3</td><td>Revisión aguas abajo al editar el alcance</td><td>Propaga 4.3 &rarr; 6.1/7.5/8.3 con rastro auditable</td></tr>
+  <tr><td>4</td><td>Deduplicación reforzada del sugeridor de riesgos</td><td>Guarda semántica por embeddings; evita variantes repetidas</td></tr>
+  <tr><td>5</td><td>Refuerzo anti-alucinación</td><td>Fundamentación por categoría + guarda CVE determinista</td></tr>
+  <tr><td>6</td><td>Rango de matriz de riesgo 3&times;3 a 6&times;6</td><td>Flexibiliza la escala de evaluación</td></tr>
+  <tr><td>7</td><td>Acompañamiento de implementación de controles</td><td>Responsable (5.3), plan de actividades, artefacto esperado</td></tr>
+  <tr><td>8</td><td>Limpieza de corpus ENISA/ISO 27005</td><td>Filtro de ruido en ingesta + depuración (58 chunks)</td></tr>
+  <tr><td>9</td><td>Harness de evaluación RAG</td><td>Métricas reproducibles de recuperación, fidelidad y negocio</td></tr>
+</table>
+
+<h2>9. Hallazgos y recomendaciones</h2>
+<ul>
+  <li><span class="warn">Dominio personas (ingeniería social):</span> recuperación más débil (coseno 0.344); reforzar o enriquecer ese subconjunto.</li>
+  <li><strong>Instrumentar los descartes</strong> de sugerencias (conservar + motivo) para medir la precisión real del sugeridor.</li>
+  <li><strong>Endurecer el juez</strong> de fidelidad (panel de 2–3 jueces) — el 1.0 con juez único es optimista.</li>
+  <li><strong>Recuperación de cláusulas 4.x</strong> (alcance, partes interesadas): mejorar chunking o expansión de consulta.</li>
+  <li><strong>Pendiente:</strong> sección de "fuentes clave de implementación" por control (catálogo curado).</li>
+</ul>
+
+<h2>10. Decisiones de diseño y trade-offs</h2>
+<ul>
+  <li>El navegador <strong>nunca</strong> llama al servicio de IA; solo Next.js en el servidor (clave compartida).</li>
+  <li>El servicio de IA usa su <strong>propio pool asyncpg</strong>, no el ORM de la app — es dueño de las tablas de vectores.</li>
+  <li><strong>Degradación elegante:</strong> si la NVD o los embeddings fallan, el pipeline sigue con las fuentes offline.</li>
+  <li>Las propuestas de IA nacen como <strong>"generado" (borrador)</strong> y requieren revisión humana antes de formar parte del SGSI.</li>
+</ul>
+
+<h2>Anexo — Glosario</h2>
+<table>
+  <tr><th>Término</th><th>Significado</th></tr>
+  <tr><td>RAG</td><td>Generación aumentada por recuperación: recupera evidencia y la pasa al modelo como contexto</td></tr>
+  <tr><td>Chunk</td><td>Fragmento de texto indexado para recuperación</td></tr>
+  <tr><td>Embedding</td><td>Vector numérico que representa el significado de un texto</td></tr>
+  <tr><td>Top-k / coseno</td><td>Se recuperan los k fragmentos más similares por distancia coseno</td></tr>
+  <tr><td>Faithfulness</td><td>Grado en que la respuesta se apoya solo en el contexto recuperado</td></tr>
+  <tr><td>MRR</td><td>Mean Reciprocal Rank: qué tan arriba aparece el primer resultado relevante</td></tr>
+  <tr><td>SoA</td><td>Declaración de Aplicabilidad (cláusula 6.1.3.d)</td></tr>
+</table>
+
+<p class="small">— Fin del reporte. Generado para GrowthSI; contenido sintetizado y curado, sin datos sensibles.</p>
+
+</body>
+</html>

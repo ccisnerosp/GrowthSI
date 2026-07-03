@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Scrollbar personalizado — alineado al tema púrpura del SGSI.
+   Pulgar en acento (#B080FF) translúcido sobre track invisible,
+   con borde transparente + background-clip para un look fino y redondeado.
+   ─────────────────────────────────────────────────────────────── */
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(176, 128, 255, 0.40) transparent;
+}
+/* WebKit / Chromium / Edge */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(176, 128, 255, 0.35);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(176, 128, 255, 0.60);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:active {
+  background: rgba(176, 128, 255, 0.75);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Variante delgada para el menú lateral (y cualquier panel compacto). */
+.scroll-slim::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-slim::-webkit-scrollbar-thumb {
+  background: rgba(176, 128, 255, 0.30);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.scroll-slim::-webkit-scrollbar-thumb:hover {
+  background: rgba(176, 128, 255, 0.55);
+  background-clip: padding-box;
+}
